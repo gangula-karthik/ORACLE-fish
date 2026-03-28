@@ -604,7 +604,7 @@ function DetailPanel({
 }: {
   item: SelectedItem;
   roundSummaries: RoundSummary[];
-  run: NonNullable<ReturnType<typeof useSimulatorStore>["run"]>;
+  run: NonNullable<ReturnType<typeof useSimulatorStore.getState>["run"]>;
   onClose: () => void;
 }) {
   const lastSummary = roundSummaries[roundSummaries.length - 1];

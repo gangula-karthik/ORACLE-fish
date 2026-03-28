@@ -12,6 +12,7 @@ import { useSimulatorStore } from "@/lib/store";
 import { saveCachedRun, clearCachedRun } from "@/lib/cache";
 import type { ReportEvent } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { PolicyGraph } from "./PolicyGraph";
 
 function renderInlineMarkdown(text: string): ReactNode[] {
   const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*)/g);
@@ -207,6 +208,7 @@ export function ReportView() {
   // If sections are already populated (cache restore), start as done
   const [isDone, setIsDone] = useState(() => reportSections.length > 0);
   const [activeTab, setActiveTab] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<"report" | "graph">("report");
 
   useEffect(() => {
     // Skip generation if report was loaded from cache
@@ -318,7 +320,39 @@ export function ReportView() {
     : null;
 
   return (
-    <div className="max-w-6xl mx-auto px-6 py-8 grid grid-cols-3 gap-6 h-[calc(100vh-56px)]">
+    <div className="h-[calc(100vh-56px)] flex flex-col overflow-hidden">
+      {/* View mode switcher */}
+      <div className="shrink-0 max-w-6xl mx-auto w-full px-6 pt-6 pb-0 flex items-center gap-1">
+        <button
+          onClick={() => setViewMode("report")}
+          className={cn(
+            "px-3 py-1.5 rounded-md text-xs font-medium transition-colors",
+            viewMode === "report" ? "bg-foreground text-background" : "text-muted-foreground hover:bg-muted"
+          )}
+        >
+          Report
+        </button>
+        <button
+          onClick={() => setViewMode("graph")}
+          className={cn(
+            "px-3 py-1.5 rounded-md text-xs font-medium transition-colors",
+            viewMode === "graph" ? "bg-foreground text-background" : "text-muted-foreground hover:bg-muted"
+          )}
+        >
+          Impact Graph
+        </button>
+      </div>
+
+      {/* Graph view */}
+      {viewMode === "graph" && (
+        <div className="flex-1 min-h-0 px-6 pb-6 pt-4 flex flex-col">
+          <PolicyGraph />
+        </div>
+      )}
+
+      {/* Report view */}
+      {viewMode === "report" && (
+      <div className="flex-1 min-h-0 max-w-6xl mx-auto w-full px-6 py-6 grid grid-cols-3 gap-6 overflow-hidden">
       {/* Left: Report nav + stats */}
       <div className="flex flex-col gap-4">
         <div>
@@ -476,6 +510,8 @@ export function ReportView() {
           </div>
         )}
       </div>
+      </div>
+      )}
     </div>
   );
 }
