@@ -6,85 +6,53 @@ import { useSimulatorStore } from "@/lib/store";
 import type { PersonaArchetype, PersonaProfile, AgentTurn, RoundSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-// ─── Constants ────────────────────────────────────────────────────────────────
+// ─── Palette ──────────────────────────────────────────────────────────────────
 
-const ARCHETYPE_LABEL: Record<PersonaArchetype, string> = {
-  hdb_family: "HDB Family",
-  hawker: "Hawker",
-  pmet: "PMET",
-  retiree: "Retiree",
-  student: "Student",
-  sme_owner: "SME Owner",
-  gig_worker: "Gig Worker",
-  civil_servant: "Civil Servant",
-  landlord: "Landlord",
-  lower_income: "Lower Income",
+const C = {
+  positive: "#10b981",   // emerald-500
+  negative: "#f43f5e",   // rose-500
+  neutral:  "#94a3b8",   // slate-400
+  concern:  "#f59e0b",   // amber-400
 };
 
-const ARCHETYPE_ICON: Record<PersonaArchetype, string> = {
-  hdb_family: "H",
-  hawker: "W",
-  pmet: "P",
-  retiree: "R",
-  student: "S",
-  sme_owner: "B",
-  gig_worker: "G",
-  civil_servant: "C",
-  landlord: "L",
-  lower_income: "I",
-};
-
-const SENTIMENT_COLOR = {
-  positive: "#16a34a",
-  neutral:  "#6b7280",
-  negative: "#dc2626",
-  uncertain: "#d97706",
-};
-
-function sentimentFromScore(score: number): keyof typeof SENTIMENT_COLOR {
-  if (score > 0.2)  return "positive";
-  if (score < -0.2) return "negative";
-  return "neutral";
+function sentimentColor(score: number) {
+  return score > 0.2 ? C.positive : score < -0.2 ? C.negative : C.neutral;
 }
 
-// ─── Graph data types ─────────────────────────────────────────────────────────
+const ARCHETYPE_LABEL: Record<PersonaArchetype, string> = {
+  hdb_family: "HDB Family", hawker: "Hawker", pmet: "PMET",
+  retiree: "Retiree", student: "Student", sme_owner: "SME Owner",
+  gig_worker: "Gig Worker", civil_servant: "Civil Servant",
+  landlord: "Landlord", lower_income: "Lower Income",
+};
 
-interface GraphNode {
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface GNode {
   id: string;
   type: "policy" | "persona" | "concern";
   label: string;
-  shortLabel: string;
   color: string;
-  radius: number;
+  r: number;
   data: PersonaProfile | null;
-  sentimentScore?: number;
-  sentimentLabel?: string;
-  // d3 internals
-  x?: number;
-  y?: number;
-  vx?: number;
-  vy?: number;
-  fx?: number | null;
-  fy?: number | null;
+  score: number;
+  x?: number; y?: number; vx?: number; vy?: number;
+  fx?: number | null; fy?: number | null;
 }
 
-interface GraphEdge {
-  source: string | GraphNode;
-  target: string | GraphNode;
-  type: "stance" | "concern" | "impact";
-  label?: string;
-  sentimentScore?: number;
+interface GEdge {
+  source: string | GNode;
+  target: string | GNode;
+  edgeType: "stance" | "worry" | "impact";
+  score?: number;
   strength: number;
 }
 
-// ─── Detail panel ─────────────────────────────────────────────────────────────
-
 interface SelectedItem {
   kind: "policy" | "persona" | "concern";
-  node: GraphNode;
+  node: GNode;
   turns?: AgentTurn[];
   raisedBy?: string[];
-  roundsAppearedIn?: number[];
 }
 
 // ─── Graph builder ────────────────────────────────────────────────────────────
@@ -93,497 +61,378 @@ function buildGraph(
   personas: PersonaProfile[],
   agentTurns: AgentTurn[],
   roundSummaries: RoundSummary[],
-  scenario: { title: string; policyChange: string }
-): { nodes: GraphNode[]; edges: GraphEdge[] } {
-  // Final sentiment per persona (last round)
+  scenario: { title: string }
+): { nodes: GNode[]; edges: GEdge[] } {
   const turnsByPersona = new Map<string, AgentTurn[]>();
   for (const t of agentTurns) {
     if (!turnsByPersona.has(t.personaId)) turnsByPersona.set(t.personaId, []);
     turnsByPersona.get(t.personaId)!.push(t);
   }
 
-  // Collect top concerns (deduplicated, capped at 8)
-  const concernCounts = new Map<string, number>();
-  for (const s of roundSummaries) {
-    for (const c of s.topConcerns) concernCounts.set(c, (concernCounts.get(c) ?? 0) + 2);
-  }
-  for (const p of personas) {
-    for (const c of p.topConcerns) concernCounts.set(c, (concernCounts.get(c) ?? 0) + 1);
-  }
-  const topConcerns = [...concernCounts.entries()]
+  const concernWeight = new Map<string, number>();
+  for (const s of roundSummaries)
+    for (const c of s.topConcerns) concernWeight.set(c, (concernWeight.get(c) ?? 0) + 2);
+  for (const p of personas)
+    for (const c of p.topConcerns) concernWeight.set(c, (concernWeight.get(c) ?? 0) + 1);
+
+  const topConcerns = [...concernWeight.entries()]
     .sort((a, b) => b[1] - a[1])
-    .slice(0, 7)
+    .slice(0, 6)
     .map(([c]) => c);
 
-  // Nodes
-  const nodes: GraphNode[] = [];
-
-  // Policy node (center)
   const lastSummary = roundSummaries[roundSummaries.length - 1];
   const overallScore = lastSummary?.overallSentiment ?? 0;
-  nodes.push({
-    id: "policy",
-    type: "policy",
-    label: scenario.title,
-    shortLabel: scenario.title.length > 22 ? scenario.title.slice(0, 20) + "…" : scenario.title,
-    color: "#1e1b4b",
-    radius: 42,
-    data: null,
-    sentimentScore: overallScore,
-    sentimentLabel: sentimentFromScore(overallScore),
-  });
 
-  // Persona nodes
-  for (const p of personas) {
-    const turns = (turnsByPersona.get(p.id) ?? []).sort((a, b) => b.round - a.round);
-    const lastTurn = turns[0];
-    const score = lastTurn?.sentimentScore ?? 0;
-    const col = SENTIMENT_COLOR[sentimentFromScore(score)];
-    nodes.push({
-      id: p.id,
-      type: "persona",
-      label: p.name,
-      shortLabel: p.name.split(" ")[0],
-      color: col,
-      radius: 20,
-      data: p,
-      sentimentScore: score,
-      sentimentLabel: lastTurn?.sentiment ?? p.initialStance,
-    });
-  }
+  const nodes: GNode[] = [
+    {
+      id: "policy", type: "policy",
+      label: scenario.title,
+      color: "#0f172a", r: 50,
+      data: null, score: overallScore,
+    },
+    ...personas.map((p) => {
+      const turns = (turnsByPersona.get(p.id) ?? []).sort((a, b) => b.round - a.round);
+      const score = turns[0]?.sentimentScore ?? 0;
+      return {
+        id: p.id, type: "persona" as const,
+        label: p.name.split(" ")[0],
+        color: sentimentColor(score),
+        r: 16, data: p, score,
+      };
+    }),
+    ...topConcerns.map((c, i) => ({
+      id: `concern_${i}`, type: "concern" as const,
+      label: c.length > 22 ? c.slice(0, 20) + "…" : c,
+      color: C.concern, r: 5,
+      data: null, score: 0,
+    })),
+  ];
 
-  // Concern nodes
-  for (let i = 0; i < topConcerns.length; i++) {
-    const c = topConcerns[i];
-    const short = c.length > 18 ? c.slice(0, 16) + "…" : c;
-    nodes.push({
-      id: `concern_${i}`,
-      type: "concern",
-      label: c,
-      shortLabel: short,
-      color: "#b45309",
-      radius: 15,
-      data: null,
-    });
-  }
+  const edges: GEdge[] = [];
 
-  // Edges
-  const edges: GraphEdge[] = [];
-
-  // Persona → Policy
   for (const p of personas) {
     const turns = (turnsByPersona.get(p.id) ?? []).sort((a, b) => b.round - a.round);
     const score = turns[0]?.sentimentScore ?? 0;
-    edges.push({
-      source: p.id,
-      target: "policy",
-      type: "stance",
-      label: turns[0]?.sentiment ?? p.initialStance,
-      sentimentScore: score,
-      strength: 0.4,
-    });
+    edges.push({ source: p.id, target: "policy", edgeType: "stance", score, strength: 0.45 });
   }
-
-  // Persona → Concern
   for (const p of personas) {
     for (const concern of p.topConcerns) {
       const idx = topConcerns.indexOf(concern);
-      if (idx >= 0) {
-        edges.push({
-          source: p.id,
-          target: `concern_${idx}`,
-          type: "concern",
-          strength: 0.15,
-        });
-      }
+      if (idx >= 0) edges.push({ source: p.id, target: `concern_${idx}`, edgeType: "worry", strength: 0.12 });
     }
   }
-
-  // Policy → Concern (from final round summary)
   if (lastSummary) {
     for (const concern of lastSummary.topConcerns) {
       const idx = topConcerns.indexOf(concern);
-      if (idx >= 0) {
-        edges.push({
-          source: "policy",
-          target: `concern_${idx}`,
-          type: "impact",
-          strength: 0.2,
-        });
-      }
+      if (idx >= 0) edges.push({ source: "policy", target: `concern_${idx}`, edgeType: "impact", strength: 0.18 });
     }
   }
 
   return { nodes, edges };
 }
 
-// ─── Component ────────────────────────────────────────────────────────────────
+// ─── Main component ───────────────────────────────────────────────────────────
 
 export function PolicyGraph() {
   const { personas, agentTurns, roundSummaries, run } = useSimulatorStore();
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [selected, setSelected] = useState<SelectedItem | null>(null);
-  const simRef = useRef<d3.Simulation<GraphNode, GraphEdge> | null>(null);
+  const simRef = useRef<d3.Simulation<GNode, GEdge> | null>(null);
 
   const hasData = personas.length > 0 && run;
 
-  const buildSelectedItem = useCallback(
-    (node: GraphNode): SelectedItem => {
-      if (node.type === "policy") {
-        return { kind: "policy", node };
-      }
-      if (node.type === "persona") {
-        const turns = agentTurns
-          .filter((t) => t.personaId === node.id)
-          .sort((a, b) => a.round - b.round);
-        return { kind: "persona", node, turns };
-      }
-      // concern
-      const concernLabel = node.label;
-      const raisedBy = personas
-        .filter((p) => p.topConcerns.includes(concernLabel))
-        .map((p) => p.name);
-      const roundsAppearedIn = roundSummaries
-        .filter((s) => s.topConcerns.includes(concernLabel))
-        .map((s) => s.round);
-      return { kind: "concern", node, raisedBy, roundsAppearedIn };
-    },
-    [agentTurns, personas, roundSummaries]
-  );
+  const makeSelected = useCallback((node: GNode): SelectedItem => {
+    if (node.type === "policy") return { kind: "policy", node };
+    if (node.type === "persona") {
+      const turns = agentTurns.filter(t => t.personaId === node.id).sort((a, b) => a.round - b.round);
+      return { kind: "persona", node, turns };
+    }
+    const raisedBy = personas.filter(p => p.topConcerns.includes(node.label)).map(p => p.name);
+    return { kind: "concern", node, raisedBy };
+  }, [agentTurns, personas]);
 
   useEffect(() => {
     if (!hasData || !svgRef.current || !containerRef.current) return;
 
-    const scenario = run!.scenario;
-    const { nodes, edges } = buildGraph(personas, agentTurns, roundSummaries, {
-      title: scenario.title,
-      policyChange: scenario.policyChange,
-    });
+    const isDark = document.documentElement.classList.contains("dark");
+    const policyFill = isDark ? "#f1f5f9" : "#0f172a";
+    const policyText = isDark ? "#0f172a" : "#ffffff";
+    const edgeBg    = isDark ? "#334155" : "#cbd5e1"; // subtle edges
 
+    const { nodes, edges } = buildGraph(personas, agentTurns, roundSummaries, { title: run!.scenario.title });
     const container = containerRef.current;
-    const width = container.clientWidth;
-    const height = container.clientHeight;
+    const W = container.clientWidth;
+    const H = container.clientHeight;
 
-    const svg = d3
-      .select(svgRef.current)
-      .attr("width", width)
-      .attr("height", height)
-      .attr("viewBox", `0 0 ${width} ${height}`);
+    const svg = d3.select(svgRef.current)
+      .attr("width", W).attr("height", H)
+      .attr("viewBox", `0 0 ${W} ${H}`);
     svg.selectAll("*").remove();
 
-    // Fix policy at center
-    const policyNode = nodes.find((n) => n.id === "policy")!;
-    policyNode.fx = width / 2;
-    policyNode.fy = height / 2;
-
-    // Stop any previous simulation
-    simRef.current?.stop();
-
-    const simulation = d3
-      .forceSimulation<GraphNode>(nodes)
-      .force(
-        "link",
-        d3
-          .forceLink<GraphNode, GraphEdge>(edges)
-          .id((d) => d.id)
-          .distance((d) => {
-            if (d.type === "stance") return 160;
-            if (d.type === "impact") return 120;
-            return 90;
-          })
-          .strength((d) => d.strength)
-      )
-      .force("charge", d3.forceManyBody().strength(-280))
-      .force("collide", d3.forceCollide<GraphNode>((d) => d.radius + 18))
-      .force("x", d3.forceX(width / 2).strength(0.03))
-      .force("y", d3.forceY(height / 2).strength(0.03));
-
-    simRef.current = simulation;
-
-    const g = svg.append("g");
-
-    // Zoom
-    svg.call(
-      d3
-        .zoom<SVGSVGElement, unknown>()
-        .scaleExtent([0.25, 3])
-        .on("zoom", (event) => {
-          g.attr("transform", event.transform);
-        })
-    );
-
-    // Defs for arrowheads
+    // Defs
     const defs = svg.append("defs");
-    const mkArrow = (id: string, color: string) => {
-      defs
-        .append("marker")
-        .attr("id", id)
-        .attr("viewBox", "0 -5 10 10")
-        .attr("refX", 10)
-        .attr("refY", 0)
-        .attr("markerWidth", 6)
-        .attr("markerHeight", 6)
-        .attr("orient", "auto")
-        .append("path")
-        .attr("d", "M0,-5L10,0L0,5")
-        .attr("fill", color);
-    };
-    mkArrow("arrow-positive", SENTIMENT_COLOR.positive);
-    mkArrow("arrow-negative", SENTIMENT_COLOR.negative);
-    mkArrow("arrow-neutral", SENTIMENT_COLOR.neutral);
-    mkArrow("arrow-concern", "#d97706");
-    mkArrow("arrow-impact", "#6366f1");
 
-    // Draw edges
-    const edgeGroup = g.append("g").attr("class", "edges");
-    const link = edgeGroup
-      .selectAll<SVGPathElement, GraphEdge>("path")
-      .data(edges)
-      .enter()
-      .append("path")
+    // Policy glow
+    const glow = defs.append("filter").attr("id", "pg").attr("x", "-50%").attr("y", "-50%").attr("width", "200%").attr("height", "200%");
+    glow.append("feGaussianBlur").attr("in", "SourceGraphic").attr("stdDeviation", "12").attr("result", "blur");
+    glow.append("feComposite").attr("in", "SourceGraphic").attr("in2", "blur").attr("operator", "over");
+
+    // Subtle node shadow
+    const shadow = defs.append("filter").attr("id", "ns").attr("x", "-30%").attr("y", "-30%").attr("width", "160%").attr("height", "160%");
+    shadow.append("feDropShadow").attr("dx", "0").attr("dy", "2").attr("stdDeviation", "3").attr("flood-opacity", "0.12");
+
+    nodes.find(n => n.id === "policy")!.fx = W / 2;
+    nodes.find(n => n.id === "policy")!.fy = H / 2;
+
+    simRef.current?.stop();
+    const sim = d3.forceSimulation<GNode>(nodes)
+      .force("link", d3.forceLink<GNode, GEdge>(edges).id(d => d.id)
+        .distance(d => d.edgeType === "stance" ? 175 : d.edgeType === "impact" ? 130 : 95)
+        .strength(d => d.strength))
+      .force("charge", d3.forceManyBody().strength(-320))
+      .force("collide", d3.forceCollide<GNode>(d => d.r + 22))
+      .force("x", d3.forceX(W / 2).strength(0.025))
+      .force("y", d3.forceY(H / 2).strength(0.025));
+    simRef.current = sim;
+
+    const root = svg.append("g");
+    svg.call(d3.zoom<SVGSVGElement, unknown>().scaleExtent([0.2, 3.5]).on("zoom", e => root.attr("transform", e.transform)));
+
+    // ── Edges ──────────────────────────────────────────────────────────────────
+
+    const edgeG = root.append("g");
+    const link = edgeG.selectAll<SVGPathElement, GEdge>("path")
+      .data(edges).enter().append("path")
       .attr("fill", "none")
-      .attr("stroke", (d) => {
-        if (d.type === "stance") {
-          const s = d.sentimentScore ?? 0;
-          return s > 0.2 ? SENTIMENT_COLOR.positive : s < -0.2 ? SENTIMENT_COLOR.negative : SENTIMENT_COLOR.neutral;
-        }
-        if (d.type === "impact") return "#6366f1";
-        return "#d97706";
+      .attr("stroke", d => {
+        if (d.edgeType === "stance") return sentimentColor(d.score ?? 0);
+        if (d.edgeType === "impact") return C.concern;
+        return edgeBg;
       })
-      .attr("stroke-opacity", (d) => (d.type === "stance" ? 0.55 : 0.25))
-      .attr("stroke-width", (d) => (d.type === "stance" ? 1.8 : 1))
-      .attr("stroke-dasharray", (d) => (d.type === "concern" ? "3,3" : "none"))
-      .attr("marker-end", (d) => {
-        if (d.type === "stance") {
-          const s = d.sentimentScore ?? 0;
-          return `url(#arrow-${s > 0.2 ? "positive" : s < -0.2 ? "negative" : "neutral"})`;
-        }
-        if (d.type === "impact") return "url(#arrow-impact)";
-        return "url(#arrow-concern)";
-      });
+      .attr("stroke-opacity", d => d.edgeType === "stance" ? 0.38 : d.edgeType === "impact" ? 0.22 : 0.14)
+      .attr("stroke-width", d => d.edgeType === "stance" ? 1.6 : 1)
+      .attr("stroke-dasharray", d => d.edgeType === "worry" ? "2 4" : "none")
+      .attr("stroke-linecap", "round");
 
-    // Node group
-    const nodeGroup = g.append("g").attr("class", "nodes");
-    const nodeG = nodeGroup
-      .selectAll<SVGGElement, GraphNode>("g")
-      .data(nodes)
-      .enter()
-      .append("g")
-      .attr("class", "node")
+    // ── Nodes ──────────────────────────────────────────────────────────────────
+
+    const nodeG = root.append("g")
+      .selectAll<SVGGElement, GNode>("g")
+      .data(nodes).enter().append("g")
       .style("cursor", "pointer")
-      .call(
-        d3
-          .drag<SVGGElement, GraphNode>()
-          .on("start", (event, d) => {
-            if (!event.active) simulation.alphaTarget(0.3).restart();
-            d.fx = d.x;
-            d.fy = d.y;
-          })
-          .on("drag", (event, d) => {
-            d.fx = event.x;
-            d.fy = event.y;
-          })
-          .on("end", (event, d) => {
-            if (!event.active) simulation.alphaTarget(0);
-            if (d.id !== "policy") {
-              d.fx = null;
-              d.fy = null;
-            }
-          })
-      )
-      .on("click", (event, d) => {
-        event.stopPropagation();
-        setSelected(buildSelectedItem(d));
-        // Highlight
-        nodeG.selectAll("circle, rect").attr("stroke-width", 1.5);
-        d3.select(event.currentTarget)
-          .select("circle, rect")
-          .attr("stroke", "#f59e0b")
-          .attr("stroke-width", 3);
-      });
+      .call(d3.drag<SVGGElement, GNode>()
+        .on("start", (ev, d) => { if (!ev.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+        .on("drag", (ev, d) => { d.fx = ev.x; d.fy = ev.y; })
+        .on("end", (ev, d) => {
+          if (!ev.active) sim.alphaTarget(0);
+          if (d.id !== "policy") { d.fx = null; d.fy = null; }
+        }));
 
     // Policy node
-    const policyNodes = nodeG.filter((d) => d.type === "policy");
-    policyNodes
-      .append("circle")
-      .attr("r", (d) => d.radius)
-      .attr("fill", (d) => d.color)
-      .attr("stroke", "#312e81")
-      .attr("stroke-width", 2);
-    policyNodes
-      .append("text")
+    const policyG = nodeG.filter(d => d.type === "policy");
+
+    // Glow disc (behind)
+    policyG.append("circle")
+      .attr("r", 62)
+      .attr("fill", policyFill)
+      .attr("opacity", 0.07)
+      .attr("filter", "url(#pg)");
+
+    // Main disc
+    policyG.append("circle")
+      .attr("r", d => d.r)
+      .attr("fill", policyFill)
+      .attr("filter", "url(#ns)");
+
+    // Text — wrap inside disc
+    policyG.append("text")
       .attr("text-anchor", "middle")
-      .attr("dominant-baseline", "middle")
-      .attr("fill", "#fff")
-      .attr("font-size", "9px")
+      .attr("fill", policyText)
+      .attr("font-size", "8.5px")
       .attr("font-weight", "600")
+      .attr("letter-spacing", "0.3px")
       .attr("pointer-events", "none")
-      .each(function (d) {
-        const words = d.shortLabel.split(" ");
+      .each(function(d) {
         const el = d3.select(this);
-        // Wrap into 3 lines max
+        const words = d.label.split(" ");
         const lines: string[] = [];
-        let line = "";
+        let cur = "";
         for (const w of words) {
-          if ((line + " " + w).trim().length <= 12) {
-            line = (line + " " + w).trim();
-          } else {
-            if (line) lines.push(line);
-            line = w;
-          }
+          const test = cur ? `${cur} ${w}` : w;
+          if (test.length <= 14) { cur = test; }
+          else { if (cur) lines.push(cur); cur = w; }
         }
-        if (line) lines.push(line);
-        const startY = -((lines.length - 1) * 6);
+        if (cur) lines.push(cur);
+        const lineH = 11;
+        const startY = -((lines.length - 1) / 2) * lineH;
         lines.forEach((l, i) => {
           el.append("tspan")
-            .attr("x", 0)
-            .attr("dy", i === 0 ? `${startY}px` : "12px")
+            .attr("x", 0).attr("dy", i === 0 ? `${startY}px` : `${lineH}px`)
             .text(l);
         });
       });
 
-    // Persona nodes
-    const personaNodes = nodeG.filter((d) => d.type === "persona");
-    personaNodes
-      .append("circle")
-      .attr("r", (d) => d.radius)
-      .attr("fill", (d) => d.color + "22")
-      .attr("stroke", (d) => d.color)
+    // Persona nodes — clean ring
+    const personaG = nodeG.filter(d => d.type === "persona");
+
+    personaG.append("circle")
+      .attr("r", d => d.r)
+      .attr("fill", d => d.color + "12")
+      .attr("stroke", d => d.color)
+      .attr("stroke-width", 2)
+      .attr("filter", "url(#ns)");
+
+    // First-name label below
+    personaG.append("text")
+      .attr("text-anchor", "middle")
+      .attr("dy", d => d.r + 11)
+      .attr("fill", d => d.color)
+      .attr("font-size", "7.5px")
+      .attr("font-weight", "500")
+      .attr("letter-spacing", "0.2px")
+      .attr("pointer-events", "none")
+      .text(d => d.label);
+
+    // Concern nodes — small dot + floating label
+    const concernG = nodeG.filter(d => d.type === "concern");
+
+    concernG.append("circle")
+      .attr("r", d => d.r)
+      .attr("fill", C.concern + "20")
+      .attr("stroke", C.concern)
       .attr("stroke-width", 1.5);
-    personaNodes
-      .append("text")
-      .attr("text-anchor", "middle")
-      .attr("dominant-baseline", "middle")
-      .attr("fill", (d) => d.color)
-      .attr("font-size", "10px")
-      .attr("font-weight", "700")
-      .attr("pointer-events", "none")
-      .text((d) => ARCHETYPE_ICON[(d.data as PersonaProfile).archetype]);
-    personaNodes
-      .append("text")
-      .attr("text-anchor", "middle")
-      .attr("dominant-baseline", "middle")
-      .attr("fill", (d) => d.color)
-      .attr("font-size", "8px")
-      .attr("dy", "28")
-      .attr("pointer-events", "none")
-      .text((d) => d.shortLabel);
 
-    // Concern nodes
-    const concernNodes = nodeG.filter((d) => d.type === "concern");
-    const rx = 10;
-    concernNodes.each(function (d) {
-      const el = d3.select(this);
-      const textWidth = Math.min(d.shortLabel.length * 5.2 + 12, 110);
-      const boxH = 20;
-      el.append("rect")
-        .attr("x", -textWidth / 2)
-        .attr("y", -boxH / 2)
-        .attr("width", textWidth)
-        .attr("height", boxH)
-        .attr("rx", rx)
-        .attr("fill", "#fef3c7")
-        .attr("stroke", "#b45309")
-        .attr("stroke-width", 1.2);
-      el.append("text")
-        .attr("text-anchor", "middle")
-        .attr("dominant-baseline", "middle")
-        .attr("fill", "#92400e")
-        .attr("font-size", "8px")
-        .attr("pointer-events", "none")
-        .text(d.shortLabel);
-    });
+    concernG.append("text")
+      .attr("x", 10)
+      .attr("dy", "0.35em")
+      .attr("fill", isDark ? "#fbbf24" : "#92400e")
+      .attr("font-size", "7px")
+      .attr("letter-spacing", "0.15px")
+      .attr("pointer-events", "none")
+      .text(d => d.label);
 
-    // Click on background to deselect
+    // ── Hover focus effect ─────────────────────────────────────────────────────
+
+    const defaultOpacity = (d: GEdge) => d.edgeType === "stance" ? 0.38 : d.edgeType === "impact" ? 0.22 : 0.14;
+
+    nodeG
+      .on("mouseenter", function(_, d) {
+        // Fade unrelated edges
+        link
+          .attr("stroke-opacity", l => {
+            const sid = (l.source as GNode).id;
+            const tid = (l.target as GNode).id;
+            if (sid === d.id || tid === d.id) return l.edgeType === "stance" ? 0.85 : 0.55;
+            return 0.04;
+          })
+          .attr("stroke-width", l => {
+            const sid = (l.source as GNode).id;
+            const tid = (l.target as GNode).id;
+            return (sid === d.id || tid === d.id) ? (l.edgeType === "stance" ? 2.2 : 1.2) : 0.8;
+          });
+        // Fade unrelated nodes
+        nodeG.attr("opacity", nd => {
+          if (nd.id === d.id) return 1;
+          const connected = edges.some(l => {
+            const sid = (l.source as GNode).id;
+            const tid = (l.target as GNode).id;
+            return (sid === d.id && tid === nd.id) || (tid === d.id && sid === nd.id);
+          });
+          return connected ? 0.85 : 0.2;
+        });
+      })
+      .on("mouseleave", function() {
+        link.attr("stroke-opacity", defaultOpacity).attr("stroke-width", d => d.edgeType === "stance" ? 1.6 : 1);
+        nodeG.attr("opacity", 1);
+      })
+      .on("click", function(ev, d) {
+        ev.stopPropagation();
+        setSelected(makeSelected(d));
+      });
+
     svg.on("click", () => setSelected(null));
 
-    // Tick
-    const getLinkPath = (d: GraphEdge) => {
-      const s = d.source as GraphNode;
-      const t = d.target as GraphNode;
+    // ── Tick ───────────────────────────────────────────────────────────────────
+
+    const path = (d: GEdge) => {
+      const s = d.source as GNode;
+      const t = d.target as GNode;
       if (!s.x || !s.y || !t.x || !t.y) return "";
-      const dx = t.x - s.x;
-      const dy = t.y - s.y;
+      const dx = t.x - s.x, dy = t.y - s.y;
       const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-      // Shorten edge to node radius
-      const sr = s.radius + 2;
-      const tr = (t.type === "concern" ? 10 : t.radius) + 8;
-      const sx = s.x + (dx / dist) * sr;
-      const sy = s.y + (dy / dist) * sr;
-      const tx = t.x - (dx / dist) * tr;
-      const ty = t.y - (dy / dist) * tr;
-      return `M${sx},${sy} L${tx},${ty}`;
+      const sr = s.r + 2;
+      const tr = t.r + (t.type === "concern" ? 6 : 4);
+      const x1 = s.x + (dx / dist) * sr, y1 = s.y + (dy / dist) * sr;
+      const x2 = t.x - (dx / dist) * tr, y2 = t.y - (dy / dist) * tr;
+      if (d.edgeType !== "stance") return `M${x1},${y1}L${x2},${y2}`;
+      // Slight curve for stance edges
+      const nx = -dy / dist, ny = dx / dist;
+      const c = 18;
+      const cx = (x1 + x2) / 2 + nx * c, cy = (y1 + y2) / 2 + ny * c;
+      return `M${x1},${y1}Q${cx},${cy}${x2},${y2}`;
     };
 
-    simulation.on("tick", () => {
-      link.attr("d", getLinkPath);
-      nodeG.attr("transform", (d) => `translate(${d.x ?? 0},${d.y ?? 0})`);
+    sim.on("tick", () => {
+      link.attr("d", path);
+      nodeG.attr("transform", d => `translate(${d.x ?? 0},${d.y ?? 0})`);
     });
 
-    return () => {
-      simulation.stop();
-    };
-  }, [hasData, personas, agentTurns, roundSummaries, run, buildSelectedItem]);
+    return () => { sim.stop(); };
+  }, [hasData, personas, agentTurns, roundSummaries, run, makeSelected]);
 
   if (!hasData) {
     return (
-      <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">
-        Run a simulation first to see the impact graph.
+      <div className="flex-1 flex flex-col items-center justify-center gap-2">
+        <p className="text-sm text-muted-foreground">Run a simulation to see the impact graph.</p>
       </div>
     );
   }
 
   const lastSummary = roundSummaries[roundSummaries.length - 1];
+  const { positive = 0, neutral = 0, negative = 0 } = lastSummary?.sentimentBreakdown ?? {};
+  const total = positive + neutral + negative || 1;
 
   return (
-    <div className="relative flex-1 overflow-hidden" style={{ minHeight: 0 }}>
-      {/* Graph canvas */}
+    <div className="relative flex-1 overflow-hidden rounded-xl border bg-background" style={{ minHeight: 0 }}>
+
+      {/* Canvas */}
       <div ref={containerRef} className="absolute inset-0">
         <svg ref={svgRef} className="w-full h-full" />
       </div>
 
-      {/* Legend */}
-      <div className="absolute bottom-4 left-4 flex flex-col gap-1.5 bg-background/90 backdrop-blur border rounded-lg px-3 py-2.5 text-[10px] pointer-events-none">
-        <p className="font-semibold text-foreground mb-0.5">Legend</p>
-        <div className="flex items-center gap-1.5">
-          <div className="w-3 h-3 rounded-full bg-[#1e1b4b]" />
-          <span className="text-muted-foreground">Policy</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <div className="w-3 h-3 rounded-full border-2 border-[#16a34a] bg-[#16a34a22]" />
-          <span className="text-muted-foreground">Supports</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <div className="w-3 h-3 rounded-full border-2 border-[#dc2626] bg-[#dc262622]" />
-          <span className="text-muted-foreground">Opposes</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <div className="w-3 h-3 rounded-full border-2 border-[#6b7280] bg-[#6b728022]" />
-          <span className="text-muted-foreground">Neutral</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <div className="w-3 h-3 rounded-full bg-[#fef3c7] border border-[#b45309]" />
-          <span className="text-muted-foreground">Concern</span>
-        </div>
-        <p className="text-muted-foreground/60 mt-0.5">Scroll to zoom · Drag to pan</p>
-      </div>
-
-      {/* Stats overlay */}
+      {/* Sentiment bar — top center */}
       {lastSummary && (
-        <div className="absolute top-4 left-4 bg-background/90 backdrop-blur border rounded-lg px-3 py-2.5 text-[10px] pointer-events-none">
-          <p className="font-semibold text-foreground mb-1">Simulation Summary</p>
-          <div className="flex gap-3">
-            <span className="text-green-600 font-medium">{lastSummary.sentimentBreakdown.positive} positive</span>
-            <span className="text-muted-foreground">{lastSummary.sentimentBreakdown.neutral} neutral</span>
-            <span className="text-red-500 font-medium">{lastSummary.sentimentBreakdown.negative} negative</span>
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-3 bg-background/80 backdrop-blur-sm border rounded-full px-4 py-1.5 pointer-events-none select-none">
+          <span className="text-[10px] font-medium text-emerald-600">{positive} support</span>
+          <div className="flex h-1.5 w-24 rounded-full overflow-hidden gap-px">
+            <div className="bg-emerald-500 rounded-l-full transition-all" style={{ width: `${(positive / total) * 100}%` }} />
+            <div className="bg-slate-300 dark:bg-slate-600 transition-all" style={{ width: `${(neutral / total) * 100}%` }} />
+            <div className="bg-rose-500 rounded-r-full transition-all" style={{ width: `${(negative / total) * 100}%` }} />
           </div>
+          <span className="text-[10px] font-medium text-rose-500">{negative} oppose</span>
         </div>
       )}
 
+      {/* Legend — bottom left, ultra-minimal */}
+      <div className="absolute bottom-4 left-4 flex items-center gap-3 pointer-events-none select-none">
+        {[
+          { color: C.positive, label: "Support" },
+          { color: C.neutral,  label: "Neutral" },
+          { color: C.negative, label: "Oppose"  },
+          { color: C.concern,  label: "Concern" },
+        ].map(({ color, label }) => (
+          <div key={label} className="flex items-center gap-1">
+            <div className="w-2 h-2 rounded-full" style={{ background: color }} />
+            <span className="text-[9px] text-muted-foreground/70">{label}</span>
+          </div>
+        ))}
+        <span className="text-[9px] text-muted-foreground/40 ml-1">scroll · drag</span>
+      </div>
+
       {/* Detail panel */}
       {selected && (
-        <DetailPanel
+        <Panel
           item={selected}
           roundSummaries={roundSummaries}
           run={run!}
@@ -596,234 +445,243 @@ export function PolicyGraph() {
 
 // ─── Detail panel ─────────────────────────────────────────────────────────────
 
-function DetailPanel({
-  item,
-  roundSummaries,
-  run,
-  onClose,
-}: {
+type RunType = NonNullable<ReturnType<typeof useSimulatorStore.getState>["run"]>;
+
+function Panel({ item, roundSummaries, run, onClose }: {
   item: SelectedItem;
   roundSummaries: RoundSummary[];
-  run: NonNullable<ReturnType<typeof useSimulatorStore.getState>["run"]>;
+  run: RunType;
   onClose: () => void;
 }) {
-  const lastSummary = roundSummaries[roundSummaries.length - 1];
+  const last = roundSummaries[roundSummaries.length - 1];
+  const p = item.node.data as PersonaProfile | null;
 
   return (
-    <div className="absolute top-4 right-4 bottom-4 w-80 bg-background/95 backdrop-blur border rounded-xl shadow-xl overflow-y-auto z-10">
-      <div className="sticky top-0 bg-background/95 backdrop-blur border-b px-4 py-3 flex items-center justify-between">
-        <div>
-          <p className="text-[10px] uppercase tracking-widest text-muted-foreground">
-            {item.kind === "policy" ? "Policy" : item.kind === "persona" ? "Persona" : "Concern"}
+    <div className="absolute top-3 right-3 bottom-3 w-[296px] flex flex-col rounded-xl border bg-background/96 backdrop-blur-md shadow-2xl shadow-black/10 overflow-hidden z-20">
+
+      {/* Header */}
+      <div className="shrink-0 px-5 pt-5 pb-4 border-b flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[9px] uppercase tracking-widest text-muted-foreground/60 mb-0.5">
+            {item.kind}
           </p>
-          <p className="text-sm font-semibold leading-tight mt-0.5">{item.node.label}</p>
+          <p className="text-[13px] font-semibold leading-snug truncate">{item.node.label}</p>
+          {item.kind === "persona" && p && (
+            <p className="text-[10px] text-muted-foreground mt-0.5">
+              {ARCHETYPE_LABEL[p.archetype]} · {p.age}y · {p.occupation}
+            </p>
+          )}
         </div>
         <button
           onClick={onClose}
-          className="w-7 h-7 rounded-full hover:bg-muted flex items-center justify-center text-muted-foreground text-sm"
+          className="shrink-0 mt-0.5 w-6 h-6 rounded-full flex items-center justify-center text-muted-foreground/50 hover:text-foreground hover:bg-muted transition-colors text-sm leading-none"
         >
           ×
         </button>
       </div>
 
-      <div className="p-4 space-y-4 text-sm">
-        {/* Policy detail */}
+      {/* Body */}
+      <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5 text-[11px]">
+
+        {/* ── Policy ──────────────────────────────────────────────────── */}
         {item.kind === "policy" && (
           <>
-            <div>
-              <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1.5">Policy Description</p>
-              <p className="text-xs text-foreground/80 leading-relaxed">{run.scenario.policyChange}</p>
-            </div>
-            {lastSummary && (
+            <Section label="Policy Change">
+              <p className="text-[11px] leading-relaxed text-foreground/70">{run.scenario.policyChange}</p>
+            </Section>
+
+            {last && (
               <>
-                <div>
-                  <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-2">Public Sentiment</p>
-                  <div className="flex gap-1 h-6">
-                    {(["positive", "neutral", "negative"] as const).map((s) => {
-                      const count = lastSummary.sentimentBreakdown[s];
-                      const total = lastSummary.sentimentBreakdown.positive + lastSummary.sentimentBreakdown.neutral + lastSummary.sentimentBreakdown.negative;
-                      const pct = total ? (count / total) * 100 : 0;
-                      const colors = { positive: "bg-green-500", neutral: "bg-gray-400", negative: "bg-red-500" };
-                      return (
-                        <div
-                          key={s}
-                          className={cn("rounded-sm transition-all", colors[s])}
-                          style={{ width: `${pct}%`, minWidth: pct > 0 ? 4 : 0 }}
-                          title={`${s}: ${count}`}
-                        />
-                      );
-                    })}
-                  </div>
-                  <div className="flex justify-between text-[10px] text-muted-foreground mt-1">
-                    <span className="text-green-600">{lastSummary.sentimentBreakdown.positive} support</span>
-                    <span>{lastSummary.sentimentBreakdown.neutral} neutral</span>
-                    <span className="text-red-500">{lastSummary.sentimentBreakdown.negative} oppose</span>
-                  </div>
-                </div>
-                <div>
-                  <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1.5">Round Summary</p>
-                  <p className="text-xs text-foreground/80 leading-relaxed">{lastSummary.summary}</p>
-                </div>
-                <div>
-                  <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1.5">Top Concerns</p>
-                  <div className="flex flex-wrap gap-1">
-                    {lastSummary.topConcerns.map((c, i) => (
-                      <span key={i} className="text-[10px] px-2 py-0.5 rounded-full bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-300">
-                        {c}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1.5">Sentiment Over Rounds</p>
-                  <div className="flex items-end gap-1 h-10">
-                    {roundSummaries.map((s, i) => {
-                      const pct = ((s.overallSentiment + 1) / 2) * 100;
-                      const col = s.overallSentiment > 0.2 ? "bg-green-500" : s.overallSentiment < -0.2 ? "bg-red-500" : "bg-gray-400";
-                      return (
-                        <div key={i} className="flex-1 flex flex-col items-center gap-0.5">
-                          <div className={cn("w-full rounded-t", col)} style={{ height: `${pct}%` }} />
-                          <span className="text-[9px] text-muted-foreground">R{s.round}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
+                <Section label="Public Sentiment">
+                  <SentimentBar breakdown={last.sentimentBreakdown} />
+                </Section>
+
+                <Section label="Summary">
+                  <p className="text-[11px] leading-relaxed text-foreground/70">{last.summary}</p>
+                </Section>
+
+                {roundSummaries.length > 1 && (
+                  <Section label="Sentiment by Round">
+                    <RoundChart summaries={roundSummaries} />
+                  </Section>
+                )}
+
+                <Section label="Top Concerns">
+                  <Pills items={last.topConcerns} color="amber" />
+                </Section>
               </>
             )}
           </>
         )}
 
-        {/* Persona detail */}
-        {item.kind === "persona" && item.node.data && (() => {
-          const p = item.node.data as PersonaProfile;
-          return (
-            <>
-              <div className="flex items-center gap-3">
-                <div
-                  className="w-10 h-10 rounded-full flex items-center justify-center text-lg font-bold shrink-0"
-                  style={{ background: item.node.color + "22", border: `2px solid ${item.node.color}`, color: item.node.color }}
-                >
-                  {ARCHETYPE_ICON[p.archetype]}
-                </div>
-                <div>
-                  <p className="font-semibold text-sm">{p.name}</p>
-                  <p className="text-[10px] text-muted-foreground">{ARCHETYPE_LABEL[p.archetype]} · {p.age}y · {p.gender}</p>
-                </div>
-              </div>
+        {/* ── Persona ─────────────────────────────────────────────────── */}
+        {item.kind === "persona" && p && (
+          <>
+            {/* Sentiment indicator */}
+            <div className="flex items-center gap-2">
+              <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: item.node.color }} />
+              <span className="capitalize font-medium" style={{ color: item.node.color }}>
+                {item.node.score > 0.2 ? "Supports" : item.node.score < -0.2 ? "Opposes" : "Neutral"}
+              </span>
+              <span className="text-muted-foreground/50">
+                ({item.node.score > 0 ? "+" : ""}{item.node.score.toFixed(2)})
+              </span>
+            </div>
 
-              <div className="grid grid-cols-2 gap-2 text-[11px]">
-                {[
-                  ["Occupation", p.occupation],
-                  ["Income", p.monthlyIncome],
-                  ["Housing", p.housingType],
-                  ["Family", p.familyStatus],
-                  ["Ethnicity", p.ethnicity],
-                  ["Initial Stance", p.initialStance],
-                ].map(([label, val]) => (
-                  <div key={label}>
-                    <p className="text-muted-foreground">{label}</p>
-                    <p className="font-medium capitalize">{val}</p>
-                  </div>
-                ))}
-              </div>
+            <Section label="Profile">
+              <Grid items={[
+                ["Housing", p.housingType],
+                ["Income", p.monthlyIncome],
+                ["Family", p.familyStatus],
+                ["Ethnicity", p.ethnicity],
+                ["Initial stance", p.initialStance],
+              ]} />
+            </Section>
 
-              <div>
-                <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1.5">Bio</p>
-                <p className="text-xs text-foreground/80 leading-relaxed">{p.bio}</p>
-              </div>
+            <Section label="Bio">
+              <p className="text-[11px] leading-relaxed text-foreground/70">{p.bio}</p>
+            </Section>
 
-              <div>
-                <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1.5">Primary Concerns</p>
-                <div className="flex flex-wrap gap-1">
-                  {p.topConcerns.map((c, i) => (
-                    <span key={i} className="text-[10px] px-2 py-0.5 rounded-full bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-300">
-                      {c}
-                    </span>
+            <Section label="Primary Concerns">
+              <Pills items={p.topConcerns} color="amber" />
+            </Section>
+
+            {item.turns && item.turns.length > 0 && (
+              <Section label="Responses">
+                <div className="space-y-3">
+                  {item.turns.map(t => (
+                    <div key={t.round} className="relative pl-3">
+                      <div
+                        className="absolute left-0 top-1 bottom-0 w-px rounded-full"
+                        style={{ background: sentimentColor(t.sentimentScore) + "60" }}
+                      />
+                      <div className="flex items-baseline gap-1.5 mb-1">
+                        <span className="text-[9px] uppercase tracking-wide text-muted-foreground/50">R{t.round}</span>
+                        <span className="font-medium capitalize text-[10px]" style={{ color: sentimentColor(t.sentimentScore) }}>
+                          {t.sentiment}
+                        </span>
+                      </div>
+                      <p className="text-[11px] leading-relaxed text-foreground/70">{t.reaction}</p>
+                      {t.keyPoints.length > 0 && (
+                        <ul className="mt-1.5 space-y-0.5">
+                          {t.keyPoints.map((kp, i) => (
+                            <li key={i} className="flex gap-1.5 text-[10px] text-muted-foreground">
+                              <span className="shrink-0 opacity-40">—</span>
+                              <span>{kp}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
                   ))}
                 </div>
-              </div>
+              </Section>
+            )}
+          </>
+        )}
 
-              {item.turns && item.turns.length > 0 && (
-                <div>
-                  <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1.5">Simulation Responses</p>
-                  <div className="space-y-2.5">
-                    {item.turns.map((t) => {
-                      const col = t.sentiment === "positive" ? "text-green-600" : t.sentiment === "negative" ? "text-red-500" : "text-muted-foreground";
-                      return (
-                        <div key={t.round} className="border-l-2 pl-2.5" style={{ borderColor: t.sentiment === "positive" ? "#16a34a" : t.sentiment === "negative" ? "#dc2626" : "#9ca3af" }}>
-                          <div className="flex items-center gap-1.5 mb-0.5">
-                            <span className="text-[9px] font-medium uppercase tracking-wide text-muted-foreground">Round {t.round}</span>
-                            <span className={cn("text-[9px] font-semibold capitalize", col)}>{t.sentiment}</span>
-                            <span className="text-[9px] text-muted-foreground/60">({t.sentimentScore > 0 ? "+" : ""}{t.sentimentScore.toFixed(2)})</span>
-                          </div>
-                          <p className="text-[11px] text-foreground/80 leading-relaxed">{t.reaction}</p>
-                          {t.keyPoints.length > 0 && (
-                            <ul className="mt-1 space-y-0.5">
-                              {t.keyPoints.map((kp, i) => (
-                                <li key={i} className="text-[10px] text-muted-foreground flex gap-1">
-                                  <span className="shrink-0 mt-0.5">·</span>
-                                  <span>{kp}</span>
-                                </li>
-                              ))}
-                            </ul>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-            </>
-          );
-        })()}
-
-        {/* Concern detail */}
+        {/* ── Concern ─────────────────────────────────────────────────── */}
         {item.kind === "concern" && (
           <>
-            <div>
-              <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1.5">Concern</p>
-              <p className="text-xs text-foreground/80 leading-relaxed">{item.node.label}</p>
-            </div>
+            <Section label="Concern">
+              <p className="text-[11px] leading-relaxed text-foreground/70">{item.node.label}</p>
+            </Section>
+
             {item.raisedBy && item.raisedBy.length > 0 && (
-              <div>
-                <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1.5">Raised by {item.raisedBy.length} persona{item.raisedBy.length > 1 ? "s" : ""}</p>
-                <div className="flex flex-wrap gap-1">
-                  {item.raisedBy.map((name, i) => (
-                    <span key={i} className="text-[10px] px-2 py-0.5 rounded-full bg-muted text-muted-foreground border">
-                      {name}
-                    </span>
-                  ))}
-                </div>
-              </div>
+              <Section label={`Raised by ${item.raisedBy.length} persona${item.raisedBy.length > 1 ? "s" : ""}`}>
+                <Pills items={item.raisedBy} color="default" />
+              </Section>
             )}
-            {item.roundsAppearedIn && item.roundsAppearedIn.length > 0 && (
-              <div>
-                <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1.5">Appeared in rounds</p>
-                <div className="flex gap-1">
-                  {item.roundsAppearedIn.map((r) => (
-                    <span key={r} className="text-[10px] w-6 h-6 flex items-center justify-center rounded-full bg-amber-100 dark:bg-amber-900 text-amber-700 dark:text-amber-300 font-medium">
-                      {r}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-            <div>
-              <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1.5">Related to</p>
-              {lastSummary?.topConcerns.includes(item.node.label) ? (
-                <p className="text-xs text-foreground/80">
-                  This concern appeared in the final round summary, indicating it is a persistent issue.
-                </p>
-              ) : (
-                <p className="text-xs text-muted-foreground">
-                  Surfaced from persona profiles but not in the final round summary.
-                </p>
-              )}
-            </div>
+
+            <Section label="Status">
+              <p className="text-[11px] leading-relaxed text-foreground/70">
+                {last?.topConcerns.includes(item.node.label)
+                  ? "Persisted through the final round — a recurring concern across personas."
+                  : "Surfaced from persona backgrounds but did not dominate the final round."}
+              </p>
+            </Section>
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+// ─── Small sub-components ─────────────────────────────────────────────────────
+
+function Section({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <p className="text-[9px] uppercase tracking-widest text-muted-foreground/50 mb-1.5">{label}</p>
+      {children}
+    </div>
+  );
+}
+
+function Grid({ items }: { items: [string, string][] }) {
+  return (
+    <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+      {items.map(([k, v]) => (
+        <div key={k}>
+          <p className="text-[9px] text-muted-foreground/50">{k}</p>
+          <p className="text-[11px] font-medium capitalize text-foreground/80">{v}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Pills({ items, color }: { items: string[]; color: "amber" | "default" }) {
+  return (
+    <div className="flex flex-wrap gap-1">
+      {items.map((item, i) => (
+        <span
+          key={i}
+          className={cn(
+            "text-[9px] px-2 py-0.5 rounded-full border",
+            color === "amber"
+              ? "border-amber-200/60 dark:border-amber-800/60 text-amber-700 dark:text-amber-400 bg-amber-50/60 dark:bg-amber-950/40"
+              : "border-border text-muted-foreground bg-muted/50"
+          )}
+        >
+          {item}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function SentimentBar({ breakdown }: { breakdown: { positive: number; neutral: number; negative: number } }) {
+  const total = (breakdown.positive + breakdown.neutral + breakdown.negative) || 1;
+  return (
+    <div className="space-y-1.5">
+      <div className="flex h-2 rounded-full overflow-hidden gap-px">
+        <div className="bg-emerald-500 transition-all rounded-l-full" style={{ width: `${(breakdown.positive / total) * 100}%` }} />
+        <div className="bg-slate-300 dark:bg-slate-600 transition-all" style={{ width: `${(breakdown.neutral / total) * 100}%` }} />
+        <div className="bg-rose-500 transition-all rounded-r-full" style={{ width: `${(breakdown.negative / total) * 100}%` }} />
+      </div>
+      <div className="flex justify-between text-[9px]">
+        <span className="text-emerald-600">{breakdown.positive} support</span>
+        <span className="text-muted-foreground/50">{breakdown.neutral} neutral</span>
+        <span className="text-rose-500">{breakdown.negative} oppose</span>
+      </div>
+    </div>
+  );
+}
+
+function RoundChart({ summaries }: { summaries: RoundSummary[] }) {
+  return (
+    <div className="flex items-end gap-1.5 h-10">
+      {summaries.map((s, i) => {
+        const pct = Math.round(((s.overallSentiment + 1) / 2) * 100);
+        const color = s.overallSentiment > 0.2 ? "#10b981" : s.overallSentiment < -0.2 ? "#f43f5e" : "#94a3b8";
+        return (
+          <div key={i} className="flex-1 flex flex-col items-center gap-0.5 group">
+            <div className="w-full rounded-sm transition-all" style={{ height: `${pct}%`, background: color + "80" }} />
+            <span className="text-[8px] text-muted-foreground/40">R{s.round}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }

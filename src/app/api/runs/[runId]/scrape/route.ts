@@ -7,6 +7,16 @@ import { createSSEStream } from "@/lib/sse";
 import { saveSourceDocument, saveRunMeta } from "@/lib/supermemory";
 import type { PresetScenarioId, SourceDocument } from "@/lib/types";
 
+const DEFAULT_SCRAPE_TIMEOUT_MS = 120_000;
+const parsedScrapeTimeoutMs = Number(process.env.TINYFISH_SCRAPE_TIMEOUT_MS);
+const SCRAPE_TIMEOUT_MS =
+  Number.isFinite(parsedScrapeTimeoutMs) && parsedScrapeTimeoutMs >= 30_000
+    ? Math.floor(parsedScrapeTimeoutMs)
+    : DEFAULT_SCRAPE_TIMEOUT_MS;
+
+// Keep the route duration slightly above the upstream SDK timeout.
+export const maxDuration = Math.ceil(SCRAPE_TIMEOUT_MS / 1000) + 15;
+
 const PARLIAMENT_SOURCES = [
   {
     url: "https://www.parliament.gov.sg/news/topics/gst",
@@ -35,7 +45,7 @@ export async function GET(
   });
 
   (async () => {
-    const client = new TinyFish({ timeout: 60_000 });
+    const client = new TinyFish({ timeout: SCRAPE_TIMEOUT_MS });
     let totalDocs = 0;
     const scenarioQuery = req.nextUrl.searchParams.get("policyChange") ?? "GST increase Singapore";
     const scenarioTitle = req.nextUrl.searchParams.get("title") ?? "Policy scenario";
