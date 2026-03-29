@@ -12,14 +12,20 @@ import { cn } from "@/lib/utils";
 const STEPS: AppStep[] = ["setup", "scrape", "simulate", "report"];
 
 export default function Home() {
-  const { step, error, setStep, run, scrapeLog } = useSimulatorStore();
+  const { step, error, setStep, run, scrapeLog, sourceDocs, personas } = useSimulatorStore();
   const currentIdx = STEPS.indexOf(step);
   const canGoBack = currentIdx > 0;
+  const hasRun = Boolean(run);
 
-  const scrapeDone = scrapeLog.some((l) => l.message.includes("Scrape complete"));
-  const simDone = run?.status === "simulation_complete" || run?.status === "generating_report" || run?.status === "complete";
+  const scrapeDone = sourceDocs.length > 0 || scrapeLog.some((l) => l.message.includes("Scrape complete"));
+  const simDone =
+    personas.length > 0 ||
+    run?.status === "simulation_complete" ||
+    run?.status === "generating_report" ||
+    run?.status === "complete";
 
   const canGoForward =
+    (step === "setup" && hasRun) ||
     (step === "scrape" && scrapeDone) ||
     (step === "simulate" && simDone);
 

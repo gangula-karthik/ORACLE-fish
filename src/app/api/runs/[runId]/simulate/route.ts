@@ -1,14 +1,42 @@
 import { NextRequest } from "next/server";
-import { generateAgentTurn, generateRoundSummary } from "@/lib/openai-client";
+import { createInteractionEvent, generateAgentTurn, generateRoundSummary } from "@/lib/openai-client";
 import {
+  getInteractionContext,
   saveAgentTurn,
+  saveInteraction,
   saveRoundSummary,
   saveRunMeta,
   searchSources,
   getPersonaMemory,
 } from "@/lib/supermemory";
 import { createSSEStream } from "@/lib/sse";
-import type { PersonaProfile, ScenarioInput, AgentTurn } from "@/lib/types";
+import type { PersonaProfile, ScenarioInput, AgentTurn, VisiblePost } from "@/lib/types";
+
+function pickVisiblePosts(persona: PersonaProfile, previousTurns: AgentTurn[]): VisiblePost[] {
+  return previousTurns
+    .filter((turn) => turn.personaId !== persona.id)
+    .map((turn) => {
+      const sharedTags = persona.visibilityTags.filter((tag) =>
+        turn.keyPoints.some((point) => point.toLowerCase().includes(tag.toLowerCase()))
+      ).length;
+      const stanceBonus = turn.stance === persona.initialStance ? 0.15 : 0;
+      const salience = turn.engagementScore + turn.influenceWeight * 0.35 + sharedTags * 0.08 + stanceBonus;
+      return { turn, salience };
+    })
+    .sort((a, b) => b.salience - a.salience)
+    .slice(0, 3)
+    .map(({ turn }) => ({
+      turnId: turn.id,
+      personaId: turn.personaId,
+      personaName: turn.personaName,
+      round: turn.round,
+      actionType: turn.actionType,
+      stance: turn.stance,
+      sentimentScore: turn.sentimentScore,
+      content: turn.reaction,
+      influenceWeight: turn.influenceWeight,
+    }));
+}
 
 export async function GET(
   req: NextRequest,
@@ -36,6 +64,7 @@ export async function GET(
 
       // Pull source context once (shared across rounds)
       const sourceContext = await searchSources(runId, scenario.policyChange, 5);
+      const allTurns: AgentTurn[] = [];
 
       for (let round = 1; round <= totalRounds; round++) {
         send({ type: "round_started", round, totalRounds });
@@ -47,21 +76,33 @@ export async function GET(
           const memoryContext = round > 1
             ? await getPersonaMemory(runId, persona.id, scenario.policyChange)
             : "";
+          const socialContext = round > 1
+            ? await getInteractionContext(runId, `${persona.stakeholderLabel} ${scenario.policyChange}`, 4)
+            : "";
+          const visiblePosts = round > 1 ? pickVisiblePosts(persona, allTurns) : [];
 
           const turn = await generateAgentTurn(
             persona,
             scenario,
             round,
             sourceContext,
-            memoryContext
+            [memoryContext, socialContext].filter(Boolean).join("\n\n"),
+            visiblePosts
           );
 
           // Persist turn to Super Memory
-          await saveAgentTurn(runId, round, persona.id, persona.name, turn.reaction);
+          await saveAgentTurn(runId, turn);
           send({ type: "memory_saved", personaId: persona.id });
+
+          const interaction = createInteractionEvent(runId, turn);
+          if (interaction) {
+            await saveInteraction(runId, interaction);
+            send({ type: "interaction", interaction });
+          }
 
           send({ type: "agent_response", turn });
           turns.push(turn);
+          allTurns.push(turn);
         }
 
         // Summarise the round

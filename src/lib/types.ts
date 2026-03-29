@@ -112,6 +112,9 @@ export interface PersonaProfile {
   id: string;
   runId: string;
   archetype: PersonaArchetype;
+  sourceBasis: string[];
+  stakeholderLabel: string;
+  stakeholderType: "individual" | "community" | "business" | "institution";
   name: string;
   age: number;
   gender: string;
@@ -122,21 +125,74 @@ export interface PersonaProfile {
   familyStatus: string;
   topConcerns: string[];
   initialStance: "supportive" | "neutral" | "opposed" | "uncertain";
+  stanceStrength: number; // 0 to 1
+  sentimentBias: number; // -1 to 1
+  activityLevel: number; // 0 to 1
+  postsPerRound: number;
+  influenceWeight: number; // 0 to 2
+  visibilityTags: string[];
   bio: string;
 }
 
 // ─── Simulation ───────────────────────────────────────────────────────────────
 
+export interface VisiblePost {
+  turnId: string;
+  personaId: string;
+  personaName: string;
+  round: number;
+  actionType: InteractionType;
+  stance: "supportive" | "neutral" | "opposed";
+  sentimentScore: number;
+  content: string;
+  influenceWeight: number;
+}
+
+export type InteractionType = "post" | "reply" | "endorse" | "ignore";
+
 export interface AgentTurn {
+  id: string;
   personaId: string;
   personaName: string;
   archetype: PersonaArchetype;
   round: number;
+  actionType: InteractionType;
+  stance: "supportive" | "neutral" | "opposed";
   reaction: string;
   sentiment: "positive" | "neutral" | "negative";
   sentimentScore: number; // -1 to 1
   keyPoints: string[];
+  replyToTurnId?: string;
+  replyToPersonaId?: string;
+  targetPersonaName?: string;
+  visiblePosts?: VisiblePost[];
+  engagementScore: number;
+  influenceWeight: number;
   memoryContext?: string;
+}
+
+export interface InteractionEvent {
+  id: string;
+  runId: string;
+  round: number;
+  fromPersonaId: string;
+  fromPersonaName: string;
+  toPersonaId?: string;
+  toPersonaName?: string;
+  type: Exclude<InteractionType, "ignore">;
+  content: string;
+  sentimentScore: number;
+  keyPoints: string[];
+  influenceWeight: number;
+  engagementScore: number;
+}
+
+export interface ReportEvidenceItem {
+  id: string;
+  type: "source" | "summary" | "interaction" | "persona";
+  title: string;
+  snippet: string;
+  relevance: number;
 }
 
 export interface RoundSummary {
@@ -150,6 +206,15 @@ export interface RoundSummary {
   };
   topConcerns: string[];
   archetypeStances: Record<PersonaArchetype, "supportive" | "neutral" | "opposed">;
+  polarizationScore: number; // 0 to 1
+  flashpoints: string[];
+  coalitions: string[];
+  mostInfluentialTurns: Array<{
+    turnId: string;
+    personaName: string;
+    actionType: InteractionType;
+    engagementScore: number;
+  }>;
   summary: string;
 }
 
@@ -160,6 +225,7 @@ export interface ReportSection {
   title: string;
   content: string;
   order: number;
+  evidence?: ReportEvidenceItem[];
 }
 
 export interface Report {
@@ -186,6 +252,7 @@ export type ScrapeEvent =
 export type SimulateEvent =
   | { type: "round_started"; round: number; totalRounds: number }
   | { type: "agent_response"; turn: AgentTurn }
+  | { type: "interaction"; interaction: InteractionEvent }
   | { type: "memory_saved"; personaId: string }
   | { type: "round_summary"; summary: RoundSummary }
   | { type: "complete"; totalRounds: number }
@@ -195,6 +262,7 @@ export type SimulateEvent =
 export type ReportEvent =
   | { type: "outline"; sections: Array<{ id: string; title: string }> }
   | { type: "section_started"; sectionId: string; title: string }
+  | { type: "section_evidence"; sectionId: string; evidence: ReportEvidenceItem[] }
   | { type: "section_complete"; section: ReportSection }
   | { type: "complete"; reportId: string }
   | { type: "error"; message: string };

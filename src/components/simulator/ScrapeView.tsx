@@ -81,7 +81,8 @@ export function ScrapeView() {
       const searchLimit = Math.max(1, run.scenario.searchLimit ?? 2);
       const presetId = run.scenario.presetId ? `&presetId=${encodeURIComponent(run.scenario.presetId)}` : "";
       const title = `&title=${encodeURIComponent(run.scenario.title)}`;
-      const res = await fetch(`/api/runs/${run.runId}/scrape?policyChange=${policyChange}&searchLimit=${searchLimit}${presetId}${title}`, {
+      const sources = `&sources=${encodeURIComponent(JSON.stringify(run.scenario.sources.filter((source) => source.enabled)))}`;
+      const res = await fetch(`/api/runs/${run.runId}/scrape?policyChange=${policyChange}&searchLimit=${searchLimit}${presetId}${title}${sources}`, {
         signal: abortController.signal,
       });
       if (!res.body) throw new Error("No stream body");
@@ -209,9 +210,9 @@ export function ScrapeView() {
         />
       </div>
 
-      <div className="grid gap-8 lg:grid-cols-[minmax(0,1.2fr)_minmax(20rem,0.8fr)]">
+      <div className="grid gap-8 lg:grid-cols-[minmax(0,1.2fr)_minmax(20rem,0.8fr)] lg:items-start">
         {/* Agent log */}
-        <div className="space-y-2">
+        <div className="flex min-h-0 flex-col gap-2">
           <div className="flex items-center justify-between gap-3">
             <p className="text-[11px] font-medium uppercase tracking-[0.24em] text-muted-foreground">
               Agent Log
@@ -221,10 +222,10 @@ export function ScrapeView() {
             </p>
           </div>
 
-          <div className="relative overflow-hidden rounded-xl border border-border/70 bg-card/80 shadow-sm">
+          <div className="relative h-[min(60vh,40rem)] overflow-hidden rounded-xl border border-border/70 bg-card/80 shadow-sm">
             <div
               ref={logContainerRef}
-              className="max-h-[min(60vh,40rem)] overflow-y-auto px-4 py-4"
+              className="h-full min-h-0 overflow-y-auto px-4 py-4"
             >
               <div className="space-y-0.5 font-mono text-xs">
                 {scrapeLog.map((entry, i) => (
@@ -273,7 +274,7 @@ export function ScrapeView() {
           </div>
         </div>
 
-        <div className="space-y-4">
+        <div className="flex min-h-0 flex-col gap-4">
           <div className="flex items-center gap-2">
             <p className="text-[11px] font-medium uppercase tracking-[0.24em] text-muted-foreground">
               Documents
@@ -284,7 +285,7 @@ export function ScrapeView() {
             </span>
           </div>
 
-          <div className="rounded-xl border border-border/70 bg-card/80 p-4 shadow-sm">
+          <div className="h-[min(60vh,40rem)] overflow-hidden rounded-xl border border-border/70 bg-card/80 p-4 shadow-sm">
             {sourceDocs.length === 0 ? (
               <div className="flex min-h-48 items-center justify-center rounded-lg border border-dashed border-border/70 bg-background/40 px-6 text-center">
                 <p className="text-sm text-muted-foreground">
@@ -292,7 +293,8 @@ export function ScrapeView() {
                 </p>
               </div>
             ) : (
-              <div className="space-y-3">
+              <div className="h-full min-h-0 overflow-y-auto pr-1">
+                <div className="space-y-3">
                 {sourceDocs.map((doc) => (
                   <div key={doc.id} className="space-y-1.5 py-3 border-b last:border-0">
                     <div className="flex items-start justify-between gap-3">
@@ -313,6 +315,7 @@ export function ScrapeView() {
                     )}
                   </div>
                 ))}
+                </div>
               </div>
             )}
           </div>

@@ -3,10 +3,10 @@
 import { create } from "zustand";
 import type {
   Run,
-  ScenarioInput,
   SourceDocument,
   PersonaProfile,
   AgentTurn,
+  InteractionEvent,
   RoundSummary,
   ReportSection,
   RunStatus,
@@ -25,10 +25,12 @@ interface SimulatorState {
   scrapeLog: Array<{ time: string; message: string; type: "info" | "success" | "error" }>;
   personas: PersonaProfile[];
   agentTurns: AgentTurn[];
+  interactions: InteractionEvent[];
   roundSummaries: RoundSummary[];
   reportSections: ReportSection[];
   reportOutline: Array<{ id: string; title: string }>;
   currentSection: string | null;
+  sectionEvidence: Record<string, ReportSection["evidence"]>;
 
   // UI state
   isLoading: boolean;
@@ -44,9 +46,11 @@ interface SimulatorState {
   addScrapeLog: (message: string, type?: "info" | "success" | "error") => void;
   setPersonas: (personas: PersonaProfile[]) => void;
   addAgentTurn: (turn: AgentTurn) => void;
+  addInteraction: (interaction: InteractionEvent) => void;
   addRoundSummary: (summary: RoundSummary) => void;
   setReportOutline: (outline: Array<{ id: string; title: string }>) => void;
   setCurrentSection: (id: string | null) => void;
+  setSectionEvidence: (sectionId: string, evidence: NonNullable<ReportSection["evidence"]>) => void;
   addReportSection: (section: ReportSection) => void;
   setLoading: (v: boolean) => void;
   setError: (e: string | null) => void;
@@ -61,10 +65,12 @@ const initialState = {
   scrapeLog: [],
   personas: [],
   agentTurns: [],
+  interactions: [],
   roundSummaries: [],
   reportSections: [],
   reportOutline: [],
   currentSection: null,
+  sectionEvidence: {},
   isLoading: false,
   error: null,
   fromCache: false,
@@ -90,10 +96,19 @@ export const useSimulatorStore = create<SimulatorState>((set) => ({
   setPersonas: (personas) => set({ personas }),
   addAgentTurn: (turn) =>
     set((s) => ({ agentTurns: [...s.agentTurns, turn] })),
+  addInteraction: (interaction) =>
+    set((s) => ({ interactions: [...s.interactions, interaction] })),
   addRoundSummary: (summary) =>
     set((s) => ({ roundSummaries: [...s.roundSummaries, summary] })),
   setReportOutline: (outline) => set({ reportOutline: outline }),
   setCurrentSection: (id) => set({ currentSection: id }),
+  setSectionEvidence: (sectionId, evidence) =>
+    set((s) => ({
+      sectionEvidence: {
+        ...s.sectionEvidence,
+        [sectionId]: evidence,
+      },
+    })),
   addReportSection: (section) =>
     set((s) => ({
       reportSections: [...s.reportSections, section].sort((a, b) => a.order - b.order),
@@ -106,9 +121,11 @@ export const useSimulatorStore = create<SimulatorState>((set) => ({
       sourceDocs: entry.sourceDocs,
       personas: entry.personas,
       agentTurns: entry.agentTurns,
+      interactions: entry.interactions ?? [],
       roundSummaries: entry.roundSummaries,
       reportSections: entry.reportSections,
       reportOutline: entry.reportSections.map((s) => ({ id: s.id, title: s.title })),
+      sectionEvidence: Object.fromEntries(entry.reportSections.map((s) => [s.id, s.evidence ?? []])),
       run: {
         runId: `cached_${entry.cacheKey}`,
         title: entry.scenario.title,

@@ -3,6 +3,7 @@ import type {
   SourceDocument,
   PersonaProfile,
   AgentTurn,
+  InteractionEvent,
   RoundSummary,
   ReportSection,
 } from "./types";
@@ -13,6 +14,7 @@ export interface CacheEntry {
   sourceDocs: SourceDocument[];
   personas: PersonaProfile[];
   agentTurns: AgentTurn[];
+  interactions?: InteractionEvent[];
   roundSummaries: RoundSummary[];
   reportSections: ReportSection[];
   cachedAt: string;
@@ -48,7 +50,7 @@ export function getCachedRun(scenario: ScenarioInput): CacheEntry | null {
 
 export function saveCachedRun(
   scenario: ScenarioInput,
-  payload: Pick<CacheEntry, "sourceDocs" | "personas" | "agentTurns" | "roundSummaries" | "reportSections">
+  payload: Pick<CacheEntry, "sourceDocs" | "personas" | "agentTurns" | "interactions" | "roundSummaries" | "reportSections">
 ): void {
   if (typeof localStorage === "undefined") return;
   try {

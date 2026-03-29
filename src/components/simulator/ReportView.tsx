@@ -1,7 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -189,17 +189,16 @@ export function ReportView() {
     currentSection,
     roundSummaries,
     personas,
-    sourceDocs,
-    agentTurns,
+    interactions,
     fromCache,
     cachedAt,
     setReportOutline,
     setCurrentSection,
+    setSectionEvidence,
     addReportSection,
     setStatus,
     setError,
     setLoading,
-    setStep,
     isLoading,
     reset,
   } = useSimulatorStore();
@@ -210,20 +209,46 @@ export function ReportView() {
   const [activeTab, setActiveTab] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"report" | "graph">("report");
 
-  useEffect(() => {
-    // Skip generation if report was loaded from cache
-    if (!run || hasStarted.current || reportSections.length > 0) return;
-    hasStarted.current = true;
-    generateReport();
-  }, [run]);
-
-  useEffect(() => {
-    if (reportSections.length > 0 && !activeTab) {
-      setActiveTab(reportSections[0].id);
+  const handleReportEvent = useCallback((event: ReportEvent) => {
+    switch (event.type) {
+      case "outline":
+        setReportOutline(event.sections);
+        break;
+      case "section_started":
+        setCurrentSection(event.sectionId);
+        setActiveTab((current) => current ?? event.sectionId);
+        break;
+      case "section_evidence":
+        setSectionEvidence(event.sectionId, event.evidence);
+        break;
+      case "section_complete":
+        addReportSection(event.section);
+        setCurrentSection(null);
+        setActiveTab((current) => current ?? event.section.id);
+        break;
+      case "complete":
+        setIsDone(true);
+        setStatus("complete");
+        setLoading(false);
+        if (run) {
+          const state = useSimulatorStore.getState();
+          saveCachedRun(run.scenario, {
+            sourceDocs: state.sourceDocs,
+            personas: state.personas,
+            agentTurns: state.agentTurns,
+            interactions: state.interactions,
+            roundSummaries: state.roundSummaries,
+            reportSections: state.reportSections,
+          });
+        }
+        break;
+      case "error":
+        setError(event.message);
+        break;
     }
-  }, [reportSections]);
+  }, [addReportSection, run, setCurrentSection, setError, setLoading, setReportOutline, setSectionEvidence, setStatus]);
 
-  async function generateReport() {
+  const generateReport = useCallback(async () => {
     if (!run) return;
     setLoading(true);
     setStatus("generating_report");
@@ -262,43 +287,19 @@ export function ReportView() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [handleReportEvent, run, setError, setLoading, setStatus]);
 
-  function handleReportEvent(event: ReportEvent) {
-    switch (event.type) {
-      case "outline":
-        setReportOutline(event.sections);
-        break;
-      case "section_started":
-        setCurrentSection(event.sectionId);
-        if (!activeTab) setActiveTab(event.sectionId);
-        break;
-      case "section_complete":
-        addReportSection(event.section);
-        setCurrentSection(null);
-        if (!activeTab) setActiveTab(event.section.id);
-        break;
-      case "complete":
-        setIsDone(true);
-        setStatus("complete");
-        setLoading(false);
-        // Save full run to cache so future loads are instant
-        if (run) {
-          const state = useSimulatorStore.getState();
-          saveCachedRun(run.scenario, {
-            sourceDocs: state.sourceDocs,
-            personas: state.personas,
-            agentTurns: state.agentTurns,
-            roundSummaries: state.roundSummaries,
-            reportSections: state.reportSections,
-          });
-        }
-        break;
-      case "error":
-        setError(event.message);
-        break;
+  useEffect(() => {
+    if (!run || hasStarted.current || reportSections.length > 0) return;
+    hasStarted.current = true;
+    generateReport();
+  }, [generateReport, reportSections.length, run]);
+
+  useEffect(() => {
+    if (reportSections.length > 0 && !activeTab) {
+      setActiveTab(reportSections[0].id);
     }
-  }
+  }, [activeTab, reportSections]);
 
   function handleRerun() {
     if (run) clearCachedRun(run.scenario);
@@ -426,6 +427,10 @@ export function ReportView() {
                 <span className="text-muted-foreground">Rounds</span>
                 <span className="font-medium">{roundSummaries.length}</span>
               </div>
+              <div className="flex justify-between text-xs">
+                <span className="text-muted-foreground">Interactions</span>
+                <span className="font-medium">{interactions.length}</span>
+              </div>
             </div>
             {lastSummary.topConcerns.length > 0 && (
               <div>
@@ -485,6 +490,23 @@ export function ReportView() {
               <ScrollArea className="h-[calc(100vh-220px)]">
                 <div className="max-w-none space-y-5 p-6">
                   {renderMarkdownBlocks(activeSection.content)}
+                  {activeSection.evidence && activeSection.evidence.length > 0 && (
+                    <div className="space-y-3 border-t pt-5">
+                      <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Evidence Used</p>
+                      <div className="grid gap-2">
+                        {activeSection.evidence.map((item) => (
+                          <div key={item.id} className="rounded-lg border border-border/70 bg-muted/20 p-3">
+                            <div className="mb-1 flex items-center justify-between gap-2">
+                              <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{item.type}</span>
+                              <span className="text-[10px] text-muted-foreground">{item.relevance.toFixed(2)}</span>
+                            </div>
+                            <p className="text-xs font-medium text-foreground">{item.title}</p>
+                            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{item.snippet}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </ScrollArea>
             </CardContent>
